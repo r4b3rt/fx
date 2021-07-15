@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Uber Technologies, Inc.
+// Copyright (c) 2020-2021 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -22,12 +22,48 @@ package fxtest
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"os"
 
 	"go.uber.org/fx"
 	"go.uber.org/fx/internal/fxlog"
 	"go.uber.org/fx/internal/lifecycle"
 	"go.uber.org/fx/internal/testutil"
 )
+
+// If a testing.T is unspecified, degarde to printing to stderr to provide
+// meaningful messages.
+type panicT struct {
+	W io.Writer // stream to which we'll write messages
+
+	// lastError message written to the stream with Errorf. We'll use this
+	// as the panic message if FailNow is called.
+	lastErr string
+}
+
+var _ TB = &panicT{}
+
+func (t *panicT) format(s string, args ...interface{}) string {
+	return fmt.Sprintf(s, args...)
+}
+
+func (t *panicT) Logf(s string, args ...interface{}) {
+	fmt.Fprintln(t.W, t.format(s, args...))
+}
+
+func (t *panicT) Errorf(s string, args ...interface{}) {
+	t.lastErr = t.format(s, args...)
+	fmt.Fprintln(t.W, t.lastErr)
+}
+
+func (t *panicT) FailNow() {
+	if len(t.lastErr) > 0 {
+		panic(t.lastErr)
+	}
+
+	panic("test lifecycle failed")
+}
 
 // Lifecycle is a testing spy for fx.Lifecycle. It exposes Start and Stop
 // methods (and some test-specific helpers) so that unit tests can exercise
@@ -41,7 +77,13 @@ var _ fx.Lifecycle = (*Lifecycle)(nil)
 
 // NewLifecycle creates a new test lifecycle.
 func NewLifecycle(t TB) *Lifecycle {
-	w := testutil.WriteSyncer{T: t}
+	var w io.Writer
+	if t != nil {
+		w = testutil.WriteSyncer{T: t}
+	} else {
+		w = os.Stderr
+		t = &panicT{W: os.Stderr}
+	}
 	return &Lifecycle{
 		lc: lifecycle.New(fxlog.DefaultLogger(w)),
 		t:  t,

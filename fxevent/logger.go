@@ -1,4 +1,4 @@
-// Copyright (c) 2019 Uber Technologies, Inc.
+// Copyright (c) 2021 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,11 +18,21 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-// +build tools
+package fxevent
 
-package fx
+// Logger defines interface used for logging.
+type Logger interface {
+	// LogEvent is called when a logging event is emitted.
+	LogEvent(Event)
+}
 
-import (
-	// Tools we use during development.
-	_ "golang.org/x/lint/golint"
-)
+// NopLogger is an Fx event logger that ignores all messages.
+var NopLogger = nopLogger{}
+
+type nopLogger struct{}
+
+var _ Logger = nopLogger{}
+
+func (nopLogger) LogEvent(Event) {}
+
+func (nopLogger) String() string { return "NopLogger" }

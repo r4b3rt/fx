@@ -1,4 +1,4 @@
-// Copyright (c) 2020 Uber Technologies, Inc.
+// Copyright (c) 2020-2021 Uber Technologies, Inc.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -18,11 +18,22 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-package fx
+package fxlog
 
-import "go.uber.org/fx/internal/fxlog"
+import (
+	"testing"
 
-// WithLogger exposes logger option for tests.
-func WithLogger(l fxlog.Logger) Option {
-	return withLogger(l)
+	"github.com/stretchr/testify/assert"
+	"go.uber.org/fx/internal/testutil"
+	"go.uber.org/goleak"
+)
+
+func TestNew(t *testing.T) {
+	assert.NotPanics(t, func() {
+		DefaultLogger(testutil.WriteSyncer{T: t})
+	})
+}
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
 }
