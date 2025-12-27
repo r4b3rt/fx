@@ -21,19 +21,25 @@
 package fxtest
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/fx"
 	"go.uber.org/goleak"
 )
 
 func TestLifecycle(t *testing.T) {
-	defer goleak.VerifyNoLeaks(t)
+	t.Parallel()
 
 	t.Run("Success", func(t *testing.T) {
+		t.Parallel()
+
 		spy := newTB()
 
 		n := 0
@@ -48,7 +54,9 @@ func TestLifecycle(t *testing.T) {
 		assert.Equal(t, 2, n, "Didn't run start and stop hooks.")
 	})
 
-	t.Run("StartFailure", func(t *testing.T) {
+	t.Run("StartError", func(t *testing.T) {
+		t.Parallel()
+
 		spy := newTB()
 		lc := NewLifecycle(spy)
 		lc.Append(fx.Hook{OnStart: func(context.Context) error { return errors.New("fail") }})
@@ -61,6 +69,8 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	t.Run("StopFailure", func(t *testing.T) {
+		t.Parallel()
+
 		spy := newTB()
 		lc := NewLifecycle(spy)
 		lc.Append(fx.Hook{OnStop: func(context.Context) error { return errors.New("fail") }})
@@ -73,6 +83,8 @@ func TestLifecycle(t *testing.T) {
 	})
 
 	t.Run("RequireLeakDetection", func(t *testing.T) {
+		t.Parallel()
+
 		spy := newTB()
 		lc := NewLifecycle(spy)
 
@@ -104,4 +116,207 @@ func TestLifecycle(t *testing.T) {
 		lc.RequireStop()
 		assert.Equal(t, 0, spy.failures, "Expected lifecycle to stop.")
 	})
+}
+
+func TestEnforceTimeout(t *testing.T) {
+	// These tests directly call Start and Stop
+	// rather than RequireStart and RequireStop
+	// because EnforceTimeout does not apply to those.
+
+	t.Run("StartHookTimeout", func(t *testing.T) {
+		t.Parallel()
+
+		wait := make(chan struct{})
+		defer close(wait) // force timeout by blocking OnStart until end of test
+
+		spy := newTB()
+		lc := NewLifecycle(spy, EnforceTimeout(true))
+		lc.Append(fx.Hook{
+			OnStart: func(context.Context) error {
+				<-wait
+				return nil
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		assert.ErrorIs(t, lc.Start(ctx), context.DeadlineExceeded)
+		assert.Zero(t, spy.failures)
+	})
+
+	t.Run("StopHookTimeout", func(t *testing.T) {
+		t.Parallel()
+
+		wait := make(chan struct{})
+		defer close(wait) // force timeout by blocking OnStop until end of test
+
+		spy := newTB()
+		lc := NewLifecycle(spy, EnforceTimeout(true))
+		lc.Append(fx.Hook{
+			OnStop: func(context.Context) error {
+				<-wait
+				return nil
+			},
+		})
+
+		require.NoError(t, lc.Start(context.Background()))
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		assert.ErrorIs(t, lc.Stop(ctx), context.DeadlineExceeded)
+		assert.Zero(t, spy.failures)
+	})
+
+	t.Run("NoTimeout", func(t *testing.T) {
+		t.Parallel()
+
+		var (
+			started bool
+			stopped bool
+		)
+
+		spy := newTB()
+		lc := NewLifecycle(spy, EnforceTimeout(true))
+		lc.Append(fx.Hook{
+			OnStart: func(context.Context) error {
+				started = true
+				return nil
+			},
+			OnStop: func(context.Context) error {
+				stopped = true
+				return nil
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		require.NoError(t, lc.Start(ctx))
+		require.NoError(t, lc.Stop(ctx))
+		assert.True(t, started)
+		assert.True(t, stopped)
+		assert.Zero(t, spy.failures)
+	})
+
+	t.Run("OtherError", func(t *testing.T) {
+		t.Parallel()
+
+		spy := newTB()
+		lc := NewLifecycle(spy, EnforceTimeout(true))
+		lc.Append(fx.Hook{
+			OnStart: func(context.Context) error {
+				return errors.New("NOT a context-related error")
+			},
+		})
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
+		defer cancel()
+		assert.ErrorContains(t, lc.Start(ctx), "NOT a context-related error")
+		assert.Zero(t, spy.failures)
+	})
+}
+
+func TestLifecycle_OptionalT(t *testing.T) {
+	t.Parallel()
+
+	t.Run("success", func(t *testing.T) {
+		t.Parallel()
+
+		lc := NewLifecycle(nil)
+
+		var started, stopped bool
+		defer func() {
+			assert.True(t, started, "not started")
+			assert.True(t, stopped, "not stopped")
+		}()
+		lc.Append(fx.Hook{
+			OnStart: func(context.Context) error {
+				assert.False(t, started, "started twice")
+				started = true
+				return nil
+			},
+			OnStop: func(context.Context) error {
+				assert.True(t, started, "not yet started")
+				assert.False(t, stopped, "stopped twice")
+				stopped = true
+				return nil
+			},
+		})
+
+		lc.RequireStart().RequireStop()
+	})
+
+	t.Run("start error", func(t *testing.T) {
+		t.Parallel()
+
+		lc := NewLifecycle(nil)
+		lc.Append(fx.Hook{
+			OnStart: func(context.Context) error {
+				return errors.New("great sadness")
+			},
+		})
+
+		var pval any
+		func() {
+			defer func() { pval = recover() }()
+			lc.RequireStart()
+		}()
+		require.NotNil(t, pval, "must panic in case of failure")
+		assert.Contains(t, fmt.Sprint(pval), "great sadness")
+	})
+}
+
+func TestPanicT(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Logf", func(t *testing.T) {
+		t.Parallel()
+
+		var buff bytes.Buffer
+		pt := panicT{W: &buff}
+		pt.Logf("hello: %v", "world")
+
+		assert.Equal(t, "hello: world\n", buff.String())
+	})
+
+	t.Run("Errorf", func(t *testing.T) {
+		t.Parallel()
+
+		var buff bytes.Buffer
+		pt := panicT{W: &buff}
+		pt.Errorf("hello: %v", "world")
+
+		assert.Equal(t, "hello: world\n", buff.String())
+
+		// Functionally there's no difference between Logf and Errorf
+		// unless FailNow is called.
+		t.Run("FailNow", func(t *testing.T) {
+			t.Parallel()
+
+			var pval any
+			func() {
+				defer func() { pval = recover() }()
+				pt.FailNow()
+			}()
+			assert.Equal(t, "hello: world", pval)
+		})
+	})
+
+	// FailNow without calling Errorf will use the fixed message.
+	t.Run("FailNow", func(t *testing.T) {
+		t.Parallel()
+
+		var buff bytes.Buffer
+		pt := panicT{W: &buff}
+		pt.Logf("hello: %v", "world")
+
+		var pval any
+		func() {
+			defer func() { pval = recover() }()
+			pt.FailNow()
+		}()
+		assert.Equal(t, "test lifecycle failed", pval)
+	})
+}
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
 }

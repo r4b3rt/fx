@@ -21,71 +21,43 @@
 package fxlog
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"go.uber.org/fx/fxevent"
 )
 
 func TestSpy(t *testing.T) {
+	t.Parallel()
+
 	var s Spy
 
 	t.Run("empty spy", func(t *testing.T) {
-		assert.Empty(t, s.Messages(), "messages must be empty")
-		assert.Empty(t, s.String(), "string must be empty")
+		assert.Empty(t, s.Events(), "events must be empty")
+		assert.Zero(t, s.Events().Len(), "events length must be zero")
+		assert.Empty(t, s.EventTypes(), "event types must be empty")
 	})
 
-	s.Log(Entry{
-		Message: "foo bar",
-	})
-	t.Run("unformatted message", func(t *testing.T) {
-		assert.Equal(t, []Entry{
-			{Message: "foo bar"},
-		}, s.Messages(), "messages must match")
-		assert.Equal(t, "foo bar\n", s.String(), "string must match")
+	s.LogEvent(&fxevent.Started{})
+	t.Run("use after reset", func(t *testing.T) {
+		assert.Equal(t, "Started", s.EventTypes()[0])
 	})
 
-	s.Log(Entry{
-		Message: "something went wrong",
-		Fields: []Field{
-			{
-				Key:   "error",
-				Value: "great sadness",
-			},
-		},
-	})
-	t.Run("formatted message", func(t *testing.T) {
-		assert.Equal(t, []Entry{
-			{
-				Message: "foo bar",
-			},
-			{
-				Message: "something went wrong",
-				Fields: []Field{
-					{
-						Key:   "error",
-						Value: "great sadness",
-					},
-				},
-			},
-		}, s.Messages())
-		assert.Equal(t, "foo bar\nsomething went wrong\terror: great sadness\n", s.String())
+	s.LogEvent(&fxevent.Provided{Err: fmt.Errorf("some error")})
+	t.Run("some error", func(t *testing.T) {
+		assert.Equal(t, 1, s.Events().SelectByTypeName("Provided").Len())
+		assert.Equal(t, "Provided", s.EventTypes()[1])
 	})
 
 	s.Reset()
 	t.Run("reset", func(t *testing.T) {
-		assert.Empty(t, s.Messages(), "messages must be empty")
-		assert.Empty(t, s.String(), "string must be empty")
+		assert.Empty(t, s.Events(), "events must be empty")
+		assert.Empty(t, s.EventTypes(), "event types must be empty")
 	})
 
-	s.Log(Entry{
-		Message: "baz qux",
-	})
+	s.LogEvent(&fxevent.Started{})
 	t.Run("use after reset", func(t *testing.T) {
-		assert.Equal(t, []Entry{
-			{
-				Message: "baz qux",
-			},
-		}, s.Messages(), "messages must match")
-		assert.Equal(t, "baz qux\n", s.String(), "string must match")
+		assert.Equal(t, "Started", s.EventTypes()[0])
 	})
 }
